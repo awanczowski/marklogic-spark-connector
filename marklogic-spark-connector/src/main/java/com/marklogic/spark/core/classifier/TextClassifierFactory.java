@@ -19,6 +19,13 @@ public abstract class TextClassifierFactory {
 
     private static final String MOCK_CLASSIFIER_OPTION = "spark.marklogic.testing.mockClassifierResponse";
 
+    /**
+     * @return true if the options will result in {@link #newTextClassifier(Context)} returning a classifier
+     */
+    public static boolean isClassifierConfigured(Context context) {
+        return context.hasOption(MOCK_CLASSIFIER_OPTION) || context.hasOption(Options.WRITE_CLASSIFIER_HOST);
+    }
+
     public static TextClassifier newTextClassifier(Context context) {
         SemaphoreProxy semaphoreProxy = null;
         final String host = context.getStringOption(Options.WRITE_CLASSIFIER_HOST);

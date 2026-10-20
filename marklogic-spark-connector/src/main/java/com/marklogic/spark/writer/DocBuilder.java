@@ -17,6 +17,8 @@ import com.marklogic.client.io.marker.AbstractWriteHandle;
 import com.marklogic.spark.ConnectorException;
 import com.marklogic.spark.Util;
 import com.marklogic.spark.core.DocumentInputs;
+import com.marklogic.spark.core.extraction.ExtractedRecord;
+import com.marklogic.spark.core.extraction.ExtractedTextRecordSplitter;
 import com.marklogic.spark.core.extraction.ExtractionUtil;
 import com.marklogic.spark.core.splitter.ChunkAssembler;
 import com.marklogic.spark.dom.DOMHelper;
@@ -30,6 +32,7 @@ import javax.xml.parsers.DocumentBuilder;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.*;
+import java.util.function.Consumer;
 
 /**
  * Knows how to build instances of {@code DocumentWriteOperation} based on the data in {@code DocBuilder.DocumentInputs}.
@@ -46,11 +49,26 @@ public class DocBuilder {
         private final Format format;
         private final DocumentMetadataHandle metadata;
         private final boolean dropSource;
+        private final boolean html;
+        private final ExtractedTextRecordSplitter recordSplitter;
+        private final boolean recordEnvelope;
 
         public ExtractedTextConfig(Format format, DocumentMetadataHandle metadata, boolean dropSource) {
+            this(format, metadata, dropSource, false);
+        }
+
+        public ExtractedTextConfig(Format format, DocumentMetadataHandle metadata, boolean dropSource, boolean html) {
+            this(format, metadata, dropSource, html, null, false);
+        }
+
+        ExtractedTextConfig(Format format, DocumentMetadataHandle metadata, boolean dropSource, boolean html,
+                            ExtractedTextRecordSplitter recordSplitter, boolean recordEnvelope) {
             this.format = format;
             this.metadata = metadata;
             this.dropSource = dropSource;
+            this.html = html;
+            this.recordSplitter = recordSplitter;
+            this.recordEnvelope = recordEnvelope;
         }
     }
 
@@ -82,14 +100,15 @@ public class DocBuilder {
         DocumentWriteOperation mainDocument = buildMainDocument(inputs);
         documents.put(mainDocument.getUri(), mainDocument);
 
-        DocumentWriteOperation extractedTextDoc = buildExtractedTextDocument(inputs, mainDocument);
-        if (extractedTextDoc != null) {
-            documents.put(extractedTextDoc.getUri(), extractedTextDoc);
-        }
+        List<DocumentWriteOperation> extractedTextDocs = buildExtractedTextDocuments(inputs, mainDocument);
+        extractedTextDocs.forEach(doc -> documents.put(doc.getUri(), doc));
 
+        // Chunks are only associated with the single extracted text document; records replace that document and
+        // cannot be combined with splitting.
+        DocumentWriteOperation extractedTextDoc = extractedTextDocs.size() == 1 ? extractedTextDocs.get(0) : null;
         buildChunkDocuments(inputs, mainDocument, extractedTextDoc).forEach(doc -> documents.put(doc.getUri(), doc));
 
-        if (extractedTextDoc != null && extractedTextConfig.dropSource) {
+        if (!extractedTextDocs.isEmpty() && extractedTextConfig.dropSource) {
             documents.remove(mainDocument.getUri());
         }
         return documents.values();
@@ -167,19 +186,87 @@ public class DocBuilder {
         }
     }
 
-    private DocumentWriteOperation buildExtractedTextDocument(DocumentInputs inputs, DocumentWriteOperation mainDocument) {
-        if (inputs.getExtractedText() != null) {
-            String sourceUri = mainDocument.getUri();
-
-            DocumentMetadataHandle metadataToUse = this.extractedTextConfig.metadata != null ?
-                this.extractedTextConfig.metadata :
-                (DocumentMetadataHandle) mainDocument.getMetadata();
-
-            return Format.XML.equals(this.extractedTextConfig.format) ?
-                buildExtractedXmlDocument(sourceUri, inputs, metadataToUse) :
-                buildExtractedJsonDocument(sourceUri, inputs, metadataToUse);
+    private List<DocumentWriteOperation> buildExtractedTextDocuments(DocumentInputs inputs, DocumentWriteOperation mainDocument) {
+        if (inputs.getExtractedText() == null) {
+            return List.of();
         }
-        return null;
+        String sourceUri = mainDocument.getUri();
+
+        DocumentMetadataHandle metadataToUse = this.extractedTextConfig.metadata != null ?
+            this.extractedTextConfig.metadata :
+            (DocumentMetadataHandle) mainDocument.getMetadata();
+
+        if (Format.XML.equals(this.extractedTextConfig.format)) {
+            if (this.extractedTextConfig.recordSplitter != null) {
+                List<DocumentWriteOperation> records = buildExtractedRecordDocuments(sourceUri, inputs, metadataToUse);
+                if (!records.isEmpty()) {
+                    return records;
+                }
+            }
+            return List.of(buildExtractedXmlDocument(sourceUri, inputs, metadataToUse));
+        }
+        return List.of(buildExtractedJsonDocument(sourceUri, inputs, metadataToUse));
+    }
+
+    /**
+     * Builds one document per record. Records are normally split - and optionally classified - by the document
+     * pipeline; if the pipeline did not split the extracted text, it is split here. Returns an empty list - causing the
+     * single extracted text document to be written instead - if the XHTML cannot be split or no element matches.
+     */
+    private List<DocumentWriteOperation> buildExtractedRecordDocuments(String sourceUri, DocumentInputs inputs, DocumentMetadataHandle metadata) {
+        final ExtractedTextRecordSplitter splitter = this.extractedTextConfig.recordSplitter;
+        List<ExtractedRecord> records = inputs.getExtractedRecords();
+        if (records == null) {
+            try {
+                records = splitter.split(inputs.getExtractedText());
+            } catch (ConnectorException e) {
+                Util.MAIN_LOGGER.warn("Unable to split extracted text into records for document with URI: {}; writing a single extracted text document instead; cause: {}",
+                    sourceUri, e.getMessage());
+                return List.of();
+            }
+            if (records.isEmpty()) {
+                Util.MAIN_LOGGER.warn("No '{}' elements matched in extracted text for document with URI: {}; writing a single extracted text document instead.",
+                    splitter.getElement(), sourceUri);
+            }
+        }
+        if (records.isEmpty()) {
+            return List.of();
+        }
+
+        List<DocumentWriteOperation> documents = new ArrayList<>(records.size());
+        Set<String> uris = new HashSet<>();
+        for (int i = 0; i < records.size(); i++) {
+            final int recordIndex = i + 1;
+            final ExtractedRecord extractedRecord = records.get(i);
+            final String uri = makeRecordUri(sourceUri, recordIndex, extractedRecord.getUriValue());
+            if (!uris.add(uri)) {
+                throw new ConnectorException(String.format(
+                    "Duplicate value '%s' for attribute '%s' in extracted text for document with URI: %s; each record must have a unique value.",
+                    extractedRecord.getUriValue(), splitter.getUriAttribute(), sourceUri));
+            }
+
+            Document recordXml = domHelper.parseXmlString(extractedRecord.getContent(), sourceUri);
+            Document doc = extractedTextConfig.recordEnvelope ?
+                newExtractedXmlEnvelope(sourceUri, inputs, recordIndex,
+                    content -> content.appendChild(content.getOwnerDocument().importNode(recordXml.getDocumentElement(), true)),
+                    extractedRecord.getClassification() != null ? extractedRecord.getClassification() : inputs.getDocumentClassification()) :
+                recordXml;
+            documents.add(new DocumentWriteOperationImpl(uri, metadata, new DOMHandle(doc)));
+        }
+        return documents;
+    }
+
+    private String makeRecordUri(String sourceUri, int recordIndex, String uriValue) {
+        final String uriAttribute = this.extractedTextConfig.recordSplitter.getUriAttribute();
+        if (uriAttribute == null) {
+            return String.format("%s-extracted-%d.xml", sourceUri, recordIndex);
+        }
+        if (uriValue == null || uriValue.trim().isEmpty()) {
+            throw new ConnectorException(String.format(
+                "No value for attribute '%s' found on record %d in extracted text for document with URI: %s.",
+                uriAttribute, recordIndex, sourceUri));
+        }
+        return String.format("%s-extracted-%s.xml", sourceUri, uriValue.trim());
     }
 
     /**
@@ -248,6 +335,20 @@ public class DocBuilder {
     }
 
     private DocumentWriteOperation buildExtractedXmlDocument(String sourceUri, DocumentInputs inputs, DocumentMetadataHandle sourceMetadata) {
+        Document doc = newExtractedXmlEnvelope(sourceUri, inputs, null,
+            content -> appendExtractedContent(content.getOwnerDocument(), content, sourceUri, inputs.getExtractedText()),
+            inputs.getDocumentClassification());
+        String uri = sourceUri + "-extracted-text.xml";
+        return new DocumentWriteOperationImpl(uri, sourceMetadata, new DOMHandle(doc));
+    }
+
+    /**
+     * @param recordIndex     only included when the envelope is for a record split from the extracted text
+     * @param contentAppender populates the "content" element
+     * @param classification  optional classification to add to the envelope
+     */
+    private Document newExtractedXmlEnvelope(String sourceUri, DocumentInputs inputs, Integer recordIndex,
+                                             Consumer<Element> contentAppender, byte[] classification) {
         Document doc = domHelper.newDocument();
         Element root = doc.createElementNS(Util.DEFAULT_XML_NAMESPACE, "root");
         doc.appendChild(root);
@@ -258,8 +359,14 @@ public class DocBuilder {
             root.appendChild(sourceElement);
         }
 
+        if (recordIndex != null) {
+            Element indexElement = doc.createElementNS(Util.DEFAULT_XML_NAMESPACE, "record-index");
+            indexElement.appendChild(doc.createTextNode(recordIndex.toString()));
+            root.appendChild(indexElement);
+        }
+
         Element content = doc.createElementNS(Util.DEFAULT_XML_NAMESPACE, "content");
-        content.appendChild(doc.createTextNode(inputs.getExtractedText()));
+        contentAppender.accept(content);
         root.appendChild(content);
 
         if (inputs.getExtractedMetadata() != null && !inputs.getExtractedMetadata().isEmpty()) {
@@ -275,11 +382,28 @@ public class DocBuilder {
             });
         }
 
-        if (inputs.getDocumentClassification() != null) {
-            addClassificationToXmlDocument(doc, sourceUri, inputs.getDocumentClassification());
+        if (classification != null) {
+            addClassificationToXmlDocument(doc, sourceUri, classification);
         }
-        String uri = sourceUri + "-extracted-text.xml";
-        return new DocumentWriteOperationImpl(uri, sourceMetadata, new DOMHandle(doc));
+        return doc;
+    }
+
+    /**
+     * When the extracted content is Tika XHTML, it is inserted as XML elements so that it can be queried as structure;
+     * otherwise it is added as text. If the XHTML cannot be parsed, it falls back to text so no content is lost.
+     */
+    private void appendExtractedContent(Document doc, Element content, String sourceUri, String extractedText) {
+        if (extractedTextConfig.html) {
+            try {
+                Document xhtml = domHelper.parseXmlString(extractedText, sourceUri);
+                content.appendChild(doc.importNode(xhtml.getDocumentElement(), true));
+                return;
+            } catch (ConnectorException e) {
+                Util.MAIN_LOGGER.warn("Unable to insert extracted HTML as XML for document with URI: {}; storing it as text instead; cause: {}",
+                    sourceUri, e.getMessage());
+            }
+        }
+        content.appendChild(doc.createTextNode(extractedText));
     }
 
     private Element createXmlMetadataElement(Document doc, Map.Entry<String, String> metadataEntry) {

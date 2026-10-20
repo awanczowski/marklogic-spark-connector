@@ -4,16 +4,21 @@
 package com.marklogic.spark.core;
 
 import com.marklogic.client.io.StringHandle;
+import com.marklogic.spark.ConnectorException;
+import com.marklogic.spark.Util;
 import com.marklogic.spark.core.classifier.TextClassifier;
 import com.marklogic.spark.core.embedding.Chunk;
 import com.marklogic.spark.core.embedding.ChunkSelector;
 import com.marklogic.spark.core.embedding.DocumentAndChunks;
 import com.marklogic.spark.core.embedding.EmbeddingProducer;
+import com.marklogic.spark.core.extraction.ExtractedRecord;
+import com.marklogic.spark.core.extraction.ExtractedTextRecordSplitter;
 import com.marklogic.spark.core.extraction.ExtractionResult;
 import com.marklogic.spark.core.extraction.TextExtractor;
 import com.marklogic.spark.core.nuclia.NuaClient;
 import com.marklogic.spark.core.nuclia.NucliaDocumentProcessor;
 import com.marklogic.spark.core.splitter.TextSplitter;
+import com.marklogic.spark.dom.DOMHelper;
 import org.apache.commons.io.IOUtils;
 
 import java.io.Closeable;
@@ -35,13 +40,25 @@ public class DocumentPipeline implements Closeable {
     private final ChunkSelector chunkSelector;
     private final NuaClient nuaClient;
     private final NucliaDocumentProcessor nucliaProcessor;
+    private final ExtractedTextRecordSplitter recordSplitter;
+    private DOMHelper domHelper;
 
     public DocumentPipeline(TextExtractor textExtractor, TextSplitter textSplitter, TextClassifier textClassifier, EmbeddingProducer embeddingProducer, ChunkSelector chunkSelector) {
+        this(textExtractor, textSplitter, textClassifier, embeddingProducer, chunkSelector, null);
+    }
+
+    /**
+     * @param recordSplitter optional; splits extracted text into records, which are then classified individually
+     * @since 3.1.3
+     */
+    public DocumentPipeline(TextExtractor textExtractor, TextSplitter textSplitter, TextClassifier textClassifier,
+                            EmbeddingProducer embeddingProducer, ChunkSelector chunkSelector, ExtractedTextRecordSplitter recordSplitter) {
         this.textExtractor = textExtractor;
         this.textSplitter = textSplitter;
         this.textClassifier = textClassifier;
         this.embeddingProducer = embeddingProducer;
         this.chunkSelector = chunkSelector;
+        this.recordSplitter = recordSplitter;
         this.nuaClient = null;
         this.nucliaProcessor = null;
     }
@@ -61,6 +78,7 @@ public class DocumentPipeline implements Closeable {
         this.textSplitter = null;
         this.embeddingProducer = null;
         this.chunkSelector = null;
+        this.recordSplitter = null;
     }
 
     @Override
@@ -94,6 +112,10 @@ public class DocumentPipeline implements Closeable {
         return chunkSelector;
     }
 
+    ExtractedTextRecordSplitter getRecordSplitter() {
+        return recordSplitter;
+    }
+
     /**
      * Implements the pipeline for processing documents via text extraction, text splitting, text classification, and
      * embedding generation.
@@ -106,6 +128,10 @@ public class DocumentPipeline implements Closeable {
 
         if (textExtractor != null) {
             inputs.stream().forEach(this::extractText);
+        }
+
+        if (recordSplitter != null) {
+            inputs.forEach(this::splitIntoRecords);
         }
 
         if (textSplitter != null) {
@@ -133,7 +159,12 @@ public class DocumentPipeline implements Closeable {
     private void classifyText(List<DocumentInputs> inputs) {
         List<TextClassifier.ClassifiableContent> contents = new ArrayList<>();
         for (DocumentInputs input : inputs) {
-            if (input.getContent() != null) {
+            List<ExtractedRecord> records = input.getExtractedRecords();
+            if (records != null && !records.isEmpty()) {
+                // Each record replaces the extracted text document and is classified individually, so there's no
+                // need to classify the source document as a whole.
+                records.forEach(extractedRecord -> contents.add(new ClassifiableRecord(extractedRecord, getDomHelper())));
+            } else if (input.getContent() != null) {
                 textClassifier.classifyDocument(input);
             }
             if (input.getChunkInputsList() != null) {
@@ -193,12 +224,61 @@ public class DocumentPipeline implements Closeable {
         }
     }
 
+    /**
+     * Sends the text of a record - not its markup - to the classifier. Tika separates table cells and rows with
+     * whitespace text nodes, so the text content retains word boundaries. Never returns null, as the classifier
+     * relies on one article per content to match responses to records.
+     */
+    private record ClassifiableRecord(ExtractedRecord extractedRecord, DOMHelper domHelper) implements TextClassifier.ClassifiableContent {
+
+        @Override
+        public String getTextToClassify() {
+            String text = domHelper.parseXmlString(extractedRecord.getContent(), null).getDocumentElement().getTextContent();
+            return text != null ? text : "";
+        }
+
+        @Override
+        public void addClassification(byte[] classification) {
+            extractedRecord.setClassification(classification);
+        }
+    }
+
     private void extractText(DocumentInputs inputs) {
         Optional<ExtractionResult> result = textExtractor.extractText(inputs);
         if (result.isPresent()) {
             inputs.setExtractedText(result.get().getText());
             inputs.setExtractedMetadata(result.get().getMetadata());
         }
+    }
+
+    /**
+     * Sets an empty list - rather than null - when no records are produced so that the document builder knows to
+     * write the single extracted text document without attempting to split again.
+     */
+    private void splitIntoRecords(DocumentInputs inputs) {
+        if (inputs.getExtractedText() == null) {
+            return;
+        }
+        List<ExtractedRecord> records;
+        try {
+            records = recordSplitter.split(inputs.getExtractedText());
+        } catch (ConnectorException e) {
+            Util.MAIN_LOGGER.warn("Unable to split extracted text into records for document with URI: {}; writing a single extracted text document instead; cause: {}",
+                inputs.getInitialUri(), e.getMessage());
+            records = List.of();
+        }
+        if (records.isEmpty()) {
+            Util.MAIN_LOGGER.warn("No '{}' elements matched in extracted text for document with URI: {}; writing a single extracted text document instead.",
+                recordSplitter.getElement(), inputs.getInitialUri());
+        }
+        inputs.setExtractedRecords(records);
+    }
+
+    private DOMHelper getDomHelper() {
+        if (domHelper == null) {
+            domHelper = new DOMHelper(null);
+        }
+        return domHelper;
     }
 
     private void applySplitter(DocumentInputs inputs) {

@@ -13,6 +13,7 @@ import com.marklogic.spark.core.embedding.ChunkSelector;
 import com.marklogic.spark.core.embedding.ChunkSelectorFactory;
 import com.marklogic.spark.core.embedding.EmbeddingProducer;
 import com.marklogic.spark.core.embedding.EmbeddingProducerFactory;
+import com.marklogic.spark.core.extraction.ExtractedTextRecordSplitter;
 import com.marklogic.spark.core.extraction.TextExtractor;
 import com.marklogic.spark.core.extraction.TikaTextExtractor;
 import com.marklogic.spark.core.nuclia.DefaultNuaClient;
@@ -38,7 +39,7 @@ public abstract class DocumentPipelineFactory {
 
         // Standard pipeline with separate components
         final TextExtractor textExtractor = context.getBooleanOption(Options.WRITE_EXTRACTED_TEXT, false) ?
-            new TikaTextExtractor() : null;
+            new TikaTextExtractor(context.getStringOption(Options.WRITE_EXTRACTED_TEXT_FORMAT, "text")) : null;
         final TextSplitter textSplitter = newTextSplitter(context);
         final TextClassifier textClassifier = TextClassifierFactory.newTextClassifier(context);
         final EmbeddingProducer embeddingProducer = newEmbeddingProducer(context);
@@ -58,7 +59,8 @@ public abstract class DocumentPipelineFactory {
 
         return textExtractor == null && textSplitter == null && textClassifier == null && embeddingProducer == null ?
             null :
-            new DocumentPipeline(textExtractor, textSplitter, textClassifier, embeddingProducer, chunkSelector);
+            new DocumentPipeline(textExtractor, textSplitter, textClassifier, embeddingProducer, chunkSelector,
+                textExtractor != null ? ExtractedTextRecordSplitter.newInstance(context) : null);
     }
 
     private static NuaClient newNuaClient(Context context) {

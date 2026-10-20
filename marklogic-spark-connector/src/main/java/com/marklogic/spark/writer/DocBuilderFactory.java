@@ -5,6 +5,7 @@ package com.marklogic.spark.writer;
 
 import com.marklogic.client.io.DocumentMetadataHandle;
 import com.marklogic.client.io.Format;
+import com.marklogic.spark.core.extraction.ExtractedTextRecordSplitter;
 import com.marklogic.spark.core.splitter.ChunkAssembler;
 import com.marklogic.spark.Util;
 
@@ -18,6 +19,9 @@ class DocBuilderFactory {
     private DocBuilder.UriMaker uriMaker;
     private Format extractedTextFormat;
     private boolean extractedTextDropSource;
+    private boolean extractedTextHtml;
+    private ExtractedTextRecordSplitter extractedTextRecordSplitter;
+    private boolean extractedTextRecordEnvelope;
     private ChunkAssembler chunkAssembler;
 
     DocBuilderFactory() {
@@ -26,7 +30,8 @@ class DocBuilderFactory {
 
     DocBuilder newDocBuilder() {
         DocBuilder.ExtractedTextConfig extractedTextConfig = new DocBuilder.ExtractedTextConfig(extractedTextFormat,
-            extractedTextMetadata, extractedTextDropSource);
+            extractedTextMetadata, extractedTextDropSource, extractedTextHtml, extractedTextRecordSplitter,
+            extractedTextRecordEnvelope);
         return new DocBuilder(uriMaker, metadata, extractedTextConfig, chunkAssembler);
     }
 
@@ -86,6 +91,24 @@ class DocBuilderFactory {
 
     DocBuilderFactory withExtractedTextDropSource(boolean extractedTextDropSource) {
         this.extractedTextDropSource = extractedTextDropSource;
+        return this;
+    }
+
+    DocBuilderFactory withExtractedTextFormat(String extractedTextFormat) {
+        this.extractedTextHtml = "html".equalsIgnoreCase(extractedTextFormat);
+        return this;
+    }
+
+    /**
+     * @param element         if null or empty, extracted text is not split into records
+     * @param attributeFilter optional, of the form name=value
+     * @param uriAttribute    optional attribute whose value is used in each record URI instead of its position
+     */
+    DocBuilderFactory withExtractedTextRecords(String namespace, String element, String attributeFilter, String uriAttribute, boolean envelope) {
+        if (element != null && !element.trim().isEmpty()) {
+            this.extractedTextRecordSplitter = new ExtractedTextRecordSplitter(namespace, element, attributeFilter, uriAttribute);
+            this.extractedTextRecordEnvelope = envelope;
+        }
         return this;
     }
 

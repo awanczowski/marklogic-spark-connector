@@ -8,6 +8,7 @@ import com.marklogic.client.io.DocumentMetadataHandle;
 import com.marklogic.client.io.marker.AbstractWriteHandle;
 import com.marklogic.client.io.marker.BufferableHandle;
 import com.marklogic.spark.ConnectorException;
+import com.marklogic.spark.core.extraction.ExtractedRecord;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,6 +32,7 @@ public class DocumentInputs {
 
     private byte[] documentClassification;
     private List<ChunkInputs> chunkInputsList;
+    private List<ExtractedRecord> extractedRecords;
 
     public DocumentInputs(String initialUri, AbstractWriteHandle content, JsonNode columnValuesForUriTemplate,
                           DocumentMetadataHandle initialMetadata) {
@@ -148,5 +150,17 @@ public class DocumentInputs {
 
     public List<ChunkInputs> getChunkInputsList() {
         return chunkInputsList;
+    }
+
+    /**
+     * @return records split from the extracted text; null if splitting was not performed, and empty if splitting
+     * was performed but produced no records
+     */
+    public List<ExtractedRecord> getExtractedRecords() {
+        return extractedRecords;
+    }
+
+    public void setExtractedRecords(List<ExtractedRecord> extractedRecords) {
+        this.extractedRecords = extractedRecords;
     }
 }

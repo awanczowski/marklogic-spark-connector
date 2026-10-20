@@ -51,6 +51,64 @@ This feature allows for ingesting files of any type. The MarkLogic REST API will
 MarkLogic recognizes it. If MarkLogic does not recognize the extension, and you wish to force a document type on each of
 the documents, you can set the `spark.marklogic.write.documentType` option to one of `XML`, `JSON`, or `TEXT`.
 
+### Extracting plain text or HTML
+
+Enable Apache Tika extraction with `spark.marklogic.write.extractedText=true`. By default the extracted `content`
+is plain text. Set `spark.marklogic.write.extractedText.format=html` to retain Tika's XHTML structure, or `text` to
+explicitly select plain text. Format values are case-insensitive; unrecognized values cause an error.
+
+The format only applies when extraction is enabled. When `spark.marklogic.write.extractedText.documentType=xml`, the
+XHTML is inserted into `content` as XML elements (a root `html` element in the `http://www.w3.org/1999/xhtml`
+namespace), so its structure can be queried and indexed. If the XHTML cannot be parsed, it is stored as text and a
+warning is logged. In a JSON document, `content` is a string containing the serialized XHTML. Metadata and URI
+generation are unchanged. Downstream splitting, classification, and embedding receive the selected representation,
+including markup when HTML is selected.
+
+Plain text is limited to Tika's default of 100,000 characters and is silently truncated beyond that. HTML is never
+truncated, as truncation would produce malformed XHTML; the complete document is always returned.
+
+### Splitting extracted HTML into records
+
+Extracted XHTML can be split into individual records - for example, one document per worksheet of an Excel file -
+using the same streaming splitter as aggregate XML import. Each record replaces the single extracted text document.
+This requires `spark.marklogic.write.extractedText.format=html` and
+`spark.marklogic.write.extractedText.documentType=xml`, and cannot be combined with `spark.marklogic.write.splitter.*`
+options.
+
+| Option | Description |
+| --- | --- |
+| `spark.marklogic.write.extractedText.aggregate.element` | Local name of the record element, e.g. `div`. Only the outermost match is a record; nested matches stay inside it. |
+| `spark.marklogic.write.extractedText.aggregate.namespace` | Namespace of the record element; defaults to `http://www.w3.org/1999/xhtml`. |
+| `spark.marklogic.write.extractedText.aggregate.attribute` | Optional `name=value` filter, e.g. `class=sheet`; elements without that exact attribute value are not records. |
+| `spark.marklogic.write.extractedText.aggregate.uriAttribute` | Optional attribute whose value is used in each record URI. The value must be present and unique within each source document, otherwise an error is thrown. |
+| `spark.marklogic.write.extractedText.aggregate.envelope` | If `true`, wrap each record in an envelope; defaults to `false`. |
+
+Records have URIs of `{sourceUri}-extracted-{position}.xml`, where position starts at 1, or
+`{sourceUri}-extracted-{attributeValue}.xml` when a URI attribute is specified. They receive the extracted text
+collections and permissions.
+
+By default, each record document is the record element itself. With the envelope enabled, each record is written as:
+
+```
+<root xmlns="http://marklogic.com/appservices/model">
+  <source-uri>...</source-uri>          <!-- omitted when the source document is dropped -->
+  <record-index>1</record-index>
+  <content><div xmlns="http://www.w3.org/1999/xhtml" class="sheet">...</div></content>
+  <extracted-metadata>...</extracted-metadata>
+  <classification>...</classification>  <!-- when a classifier is configured -->
+</root>
+```
+
+If no element matches, or the extracted content cannot be split, a warning is logged and the single extracted text
+document is written instead.
+
+When a classifier is configured via `spark.marklogic.write.classifier.*` options, each record is classified
+individually: the text of each record - not its markup - is sent to Semaphore as an article in a multi-article request,
+batched according to `spark.marklogic.write.classifier.batchSize`, and the result is added to that record's envelope.
+The source document as a whole is not classified when records are produced. Because a bare record has no place to hold
+its classification, `spark.marklogic.write.extractedText.aggregate.envelope=true` is required when a classifier is
+configured.
+
 ### Writing document rows
 
 As of the 2.2.0 release, you can [read documents from MarkLogic](reading-data/documents.md). A common use case is to then write these rows

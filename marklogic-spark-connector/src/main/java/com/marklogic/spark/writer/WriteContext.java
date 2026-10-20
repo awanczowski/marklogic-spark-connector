@@ -15,6 +15,8 @@ import com.marklogic.client.impl.GenericDocumentImpl;
 import com.marklogic.client.io.Format;
 import com.marklogic.spark.*;
 import com.marklogic.spark.api.WriteListener;
+import com.marklogic.spark.core.classifier.TextClassifierFactory;
+import com.marklogic.spark.core.extraction.ExtractedTextRecordSplitter;
 import com.marklogic.spark.core.splitter.ChunkAssemblerFactory;
 import com.marklogic.spark.dom.NamespaceContextFactory;
 import com.marklogic.spark.reader.document.DocumentRowSchema;
@@ -196,6 +198,7 @@ public class WriteContext extends ContextSupport {
     }
 
     DocBuilder newDocBuilder() {
+        validateExtractedTextRecordOptions();
         final String permissions = getStringOption(Options.WRITE_PERMISSIONS);
         DocBuilderFactory factory = new DocBuilderFactory()
             .withCollections(getStringOption(Options.WRITE_COLLECTIONS))
@@ -204,6 +207,13 @@ public class WriteContext extends ContextSupport {
             .withExtractedTextCollections(getStringOption(Options.WRITE_EXTRACTED_TEXT_COLLECTIONS))
             .withExtractedTextPermissions(getStringOption(Options.WRITE_EXTRACTED_TEXT_PERMISSIONS, permissions))
             .withExtractedTextDropSource(getBooleanOption(Options.WRITE_EXTRACTED_TEXT_DROP_SOURCE, false))
+            .withExtractedTextFormat(getStringOption(Options.WRITE_EXTRACTED_TEXT_FORMAT, "text"))
+            .withExtractedTextRecords(
+                getStringOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_NAMESPACE, ExtractedTextRecordSplitter.XHTML_NAMESPACE),
+                getStringOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ELEMENT),
+                getStringOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ATTRIBUTE),
+                getStringOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_URI_ATTRIBUTE),
+                getBooleanOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ENVELOPE, false))
             .withChunkAssembler(ChunkAssemblerFactory.makeChunkAssembler(this));
 
         if (hasOption(Options.WRITE_URI_TEMPLATE)) {
@@ -216,6 +226,38 @@ public class WriteContext extends ContextSupport {
         forEachOptionStartingWith(Options.WRITE_DOCUMENT_PROPERTIES_PREFIX, factory::withDocumentProperty);
 
         return factory.newDocBuilder();
+    }
+
+    /**
+     * Records are split from extracted XHTML and are written in place of the extracted text document, so they require
+     * HTML extraction, XML documents, and cannot be combined with splitting the extracted text into chunks.
+     */
+    void validateExtractedTextRecordOptions() {
+        if (!hasOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ELEMENT)) {
+            return;
+        }
+        final String elementOption = getOptionNameForMessage(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ELEMENT);
+        if (!"html".equalsIgnoreCase(getStringOption(Options.WRITE_EXTRACTED_TEXT_FORMAT, "text"))) {
+            throw new ConnectorException(String.format("'%s' requires '%s' to be 'html'.",
+                elementOption, getOptionNameForMessage(Options.WRITE_EXTRACTED_TEXT_FORMAT)));
+        }
+        if (!"xml".equalsIgnoreCase(getStringOption(Options.WRITE_EXTRACTED_TEXT_DOCUMENT_TYPE, "json"))) {
+            throw new ConnectorException(String.format("'%s' requires '%s' to be 'xml'.",
+                elementOption, getOptionNameForMessage(Options.WRITE_EXTRACTED_TEXT_DOCUMENT_TYPE)));
+        }
+        // Only the options that select text to split enable a splitter; other splitter options, such as the sidecar
+        // max chunks that Flux always sets, have no effect on their own. These mirror Langchain4jFactory.
+        boolean splittingEnabled = hasOption(Options.WRITE_SPLITTER_XPATH)
+            || getProperties().containsKey(Options.WRITE_SPLITTER_JSON_POINTERS)
+            || getBooleanOption(Options.WRITE_SPLITTER_TEXT, false);
+        if (splittingEnabled) {
+            throw new ConnectorException(String.format("'%s' cannot be combined with splitter options.", elementOption));
+        }
+        // A bare record is the record element itself, so only an envelope can hold each record's classification.
+        if (TextClassifierFactory.isClassifierConfigured(this) && !getBooleanOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ENVELOPE, false)) {
+            throw new ConnectorException(String.format("'%s' requires '%s' when a classifier is configured.",
+                elementOption, getOptionNameForMessage(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ENVELOPE)));
+        }
     }
 
     public Format getDocumentFormat() {

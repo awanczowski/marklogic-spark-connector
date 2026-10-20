@@ -252,6 +252,53 @@ public abstract class Options {
     public static final String WRITE_EXTRACTED_TEXT = "spark.marklogic.write.extractedText";
 
     /**
+     * Format of extracted content: "text" (default) or "html" (Tika XHTML).
+     * @since 3.1.3
+     */
+    public static final String WRITE_EXTRACTED_TEXT_FORMAT = "spark.marklogic.write.extractedText.format";
+
+    /**
+     * Local name of the element used to split extracted XHTML into individual records, using the same streaming
+     * splitter as aggregate XML import. Each matching element (outermost match only) is written as its own document,
+     * replacing the single extracted text document. Requires an extracted text format of "html" and an extracted text
+     * document type of "xml".
+     *
+     * @since 3.1.3
+     */
+    public static final String WRITE_EXTRACTED_TEXT_AGGREGATE_ELEMENT = "spark.marklogic.write.extractedText.aggregate.element";
+
+    /**
+     * Namespace of the aggregate element; defaults to the XHTML namespace.
+     *
+     * @since 3.1.3
+     */
+    public static final String WRITE_EXTRACTED_TEXT_AGGREGATE_NAMESPACE = "spark.marklogic.write.extractedText.aggregate.namespace";
+
+    /**
+     * Optional filter of the form "name=value"; only aggregate elements with an attribute of that name and exact value
+     * are written as records, e.g. "class=sheet".
+     *
+     * @since 3.1.3
+     */
+    public static final String WRITE_EXTRACTED_TEXT_AGGREGATE_ATTRIBUTE = "spark.marklogic.write.extractedText.aggregate.attribute";
+
+    /**
+     * Optional name of an attribute on the aggregate element whose value is used in each record URI instead of the
+     * record's position. Each record must have a non-empty value that is unique within the source document.
+     *
+     * @since 3.1.3
+     */
+    public static final String WRITE_EXTRACTED_TEXT_AGGREGATE_URI_ATTRIBUTE = "spark.marklogic.write.extractedText.aggregate.uriAttribute";
+
+    /**
+     * If true, each record is wrapped in an envelope containing the source URI, record index, extracted metadata, and
+     * classification. Defaults to false, in which case each record is written as the aggregate element itself.
+     *
+     * @since 3.1.3
+     */
+    public static final String WRITE_EXTRACTED_TEXT_AGGREGATE_ENVELOPE = "spark.marklogic.write.extractedText.aggregate.envelope";
+
+    /**
      * @since 2.6.0
      */
     public static final String WRITE_EXTRACTED_TEXT_DOCUMENT_TYPE = "spark.marklogic.write.extractedText.documentType";

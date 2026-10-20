@@ -9,7 +9,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
+import com.marklogic.client.io.BytesHandle;
 import org.junit.jupiter.api.Test;
 
 import com.marklogic.spark.Context;
@@ -82,6 +85,20 @@ class DocumentPipelineFactoryTest {
         assertNull(pipeline.getNuaClient(), "NuaClient should not be present");
         assertNull(pipeline.getTextSplitter(), "TextSplitter should not be present");
         assertNull(pipeline.getEmbeddingProducer(), "EmbeddingProducer should not be present");
+    }
+
+    @Test
+    void htmlTextExtractor() throws Exception {
+        Context context = new Context(Map.of(
+            Options.WRITE_EXTRACTED_TEXT, "true",
+            Options.WRITE_EXTRACTED_TEXT_FORMAT, "html"));
+        DocumentPipeline pipeline = DocumentPipelineFactory.newDocumentPipeline(context);
+        DocumentInputs inputs = new DocumentInputs("/hello.docx",
+            new BytesHandle(Files.readAllBytes(Path.of("src/test/resources/extraction-files/hello-world.docx"))),
+            null, null);
+        String html = pipeline.getTextExtractor().extractText(inputs).orElseThrow().getText();
+        org.junit.jupiter.api.Assertions.assertTrue(html.contains("<html"));
+        org.junit.jupiter.api.Assertions.assertTrue(html.contains("Hello world."));
     }
 
     @Test
