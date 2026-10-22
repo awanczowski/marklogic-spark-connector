@@ -41,6 +41,7 @@ public class DocumentPipeline implements Closeable {
     private final NuaClient nuaClient;
     private final NucliaDocumentProcessor nucliaProcessor;
     private final ExtractedTextRecordSplitter recordSplitter;
+    private boolean classifyDocumentWithRecords;
     private DOMHelper domHelper;
 
     public DocumentPipeline(TextExtractor textExtractor, TextSplitter textSplitter, TextClassifier textClassifier, EmbeddingProducer embeddingProducer, ChunkSelector chunkSelector) {
@@ -117,6 +118,14 @@ public class DocumentPipeline implements Closeable {
     }
 
     /**
+     * @param classifyDocumentWithRecords if true, the source document is classified even when records are produced,
+     *                                    which is needed when the full extracted text document is also written
+     */
+    void setClassifyDocumentWithRecords(boolean classifyDocumentWithRecords) {
+        this.classifyDocumentWithRecords = classifyDocumentWithRecords;
+    }
+
+    /**
      * Implements the pipeline for processing documents via text extraction, text splitting, text classification, and
      * embedding generation.
      */
@@ -160,11 +169,13 @@ public class DocumentPipeline implements Closeable {
         List<TextClassifier.ClassifiableContent> contents = new ArrayList<>();
         for (DocumentInputs input : inputs) {
             List<ExtractedRecord> records = input.getExtractedRecords();
-            if (records != null && !records.isEmpty()) {
-                // Each record replaces the extracted text document and is classified individually, so there's no
-                // need to classify the source document as a whole.
+            final boolean hasRecords = records != null && !records.isEmpty();
+            if (hasRecords) {
                 records.forEach(extractedRecord -> contents.add(new ClassifiableRecord(extractedRecord, getDomHelper())));
-            } else if (input.getContent() != null) {
+            }
+            // When records are produced, the source document is only classified if the full extracted text document
+            // is also being written, as otherwise there's no document to hold that classification.
+            if ((!hasRecords || classifyDocumentWithRecords) && input.getContent() != null) {
                 textClassifier.classifyDocument(input);
             }
             if (input.getChunkInputsList() != null) {

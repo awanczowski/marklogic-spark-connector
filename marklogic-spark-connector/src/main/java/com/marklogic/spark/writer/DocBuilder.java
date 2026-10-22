@@ -52,25 +52,38 @@ public class DocBuilder {
         private final boolean html;
         private final ExtractedTextRecordSplitter recordSplitter;
         private final boolean recordEnvelope;
+        private final DocumentMetadataHandle recordMetadata;
+        private final boolean recordKeepDocument;
 
         public ExtractedTextConfig(Format format, DocumentMetadataHandle metadata, boolean dropSource) {
             this(format, metadata, dropSource, false);
         }
 
         public ExtractedTextConfig(Format format, DocumentMetadataHandle metadata, boolean dropSource, boolean html) {
-            this(format, metadata, dropSource, html, null, false);
+            this(format, metadata, dropSource, html, null, false, null, false);
         }
 
+        /**
+         * @param recordMetadata     collections and permissions for each record
+         * @param recordKeepDocument whether to write the full extracted text document in addition to the records
+         */
         ExtractedTextConfig(Format format, DocumentMetadataHandle metadata, boolean dropSource, boolean html,
-                            ExtractedTextRecordSplitter recordSplitter, boolean recordEnvelope) {
+                            ExtractedTextRecordSplitter recordSplitter, boolean recordEnvelope,
+                            DocumentMetadataHandle recordMetadata, boolean recordKeepDocument) {
             this.format = format;
             this.metadata = metadata;
             this.dropSource = dropSource;
             this.html = html;
             this.recordSplitter = recordSplitter;
             this.recordEnvelope = recordEnvelope;
+            this.recordMetadata = recordMetadata;
+            this.recordKeepDocument = recordKeepDocument;
         }
     }
+
+    // Metadata keys that link each record to its source document and, optionally, the full extracted text document.
+    static final String RECORD_SOURCE_URI_KEY = "source-uri";
+    static final String RECORD_EXTRACTED_TEXT_URI_KEY = "extracted-text-uri";
 
     private final UriMaker uriMaker;
     private final DocumentMetadataHandle metadataFromOptions;
@@ -198,9 +211,17 @@ public class DocBuilder {
 
         if (Format.XML.equals(this.extractedTextConfig.format)) {
             if (this.extractedTextConfig.recordSplitter != null) {
-                List<DocumentWriteOperation> records = buildExtractedRecordDocuments(sourceUri, inputs, metadataToUse);
+                final boolean keepDocument = this.extractedTextConfig.recordKeepDocument;
+                List<DocumentWriteOperation> records = buildExtractedRecordDocuments(sourceUri, inputs,
+                    keepDocument ? makeExtractedXmlUri(sourceUri) : null);
                 if (!records.isEmpty()) {
-                    return records;
+                    if (!keepDocument) {
+                        return records;
+                    }
+                    List<DocumentWriteOperation> documents = new ArrayList<>(records.size() + 1);
+                    documents.add(buildExtractedXmlDocument(sourceUri, inputs, metadataToUse));
+                    documents.addAll(records);
+                    return documents;
                 }
             }
             return List.of(buildExtractedXmlDocument(sourceUri, inputs, metadataToUse));
@@ -213,7 +234,7 @@ public class DocBuilder {
      * pipeline; if the pipeline did not split the extracted text, it is split here. Returns an empty list - causing the
      * single extracted text document to be written instead - if the XHTML cannot be split or no element matches.
      */
-    private List<DocumentWriteOperation> buildExtractedRecordDocuments(String sourceUri, DocumentInputs inputs, DocumentMetadataHandle metadata) {
+    private List<DocumentWriteOperation> buildExtractedRecordDocuments(String sourceUri, DocumentInputs inputs, String extractedTextUri) {
         final ExtractedTextRecordSplitter splitter = this.extractedTextConfig.recordSplitter;
         List<ExtractedRecord> records = inputs.getExtractedRecords();
         if (records == null) {
@@ -247,13 +268,42 @@ public class DocBuilder {
 
             Document recordXml = domHelper.parseXmlString(extractedRecord.getContent(), sourceUri);
             Document doc = extractedTextConfig.recordEnvelope ?
-                newExtractedXmlEnvelope(sourceUri, inputs, recordIndex,
+                newExtractedXmlEnvelope(sourceUri, inputs, new RecordLinks(recordIndex, extractedTextUri),
                     content -> content.appendChild(content.getOwnerDocument().importNode(recordXml.getDocumentElement(), true)),
                     extractedRecord.getClassification() != null ? extractedRecord.getClassification() : inputs.getDocumentClassification()) :
                 recordXml;
-            documents.add(new DocumentWriteOperationImpl(uri, metadata, new DOMHandle(doc)));
+            documents.add(new DocumentWriteOperationImpl(uri, newRecordMetadata(sourceUri, extractedTextUri), new DOMHandle(doc)));
         }
         return documents;
+    }
+
+    /**
+     * Each record gets its own metadata so that the links to its source - which are also in the envelope, if used -
+     * can be queried regardless of whether the record is enveloped.
+     */
+    private DocumentMetadataHandle newRecordMetadata(String sourceUri, String extractedTextUri) {
+        DocumentMetadataHandle base = extractedTextConfig.recordMetadata;
+        DocumentMetadataHandle recordMetadata = new DocumentMetadataHandle();
+        if (base != null) {
+            recordMetadata.getCollections().addAll(base.getCollections());
+            recordMetadata.getPermissions().putAll(base.getPermissions());
+        }
+        recordMetadata.getMetadataValues().put(RECORD_SOURCE_URI_KEY, sourceUri);
+        if (extractedTextUri != null) {
+            recordMetadata.getMetadataValues().put(RECORD_EXTRACTED_TEXT_URI_KEY, extractedTextUri);
+        }
+        return recordMetadata;
+    }
+
+    /**
+     * @param index            1-based position of the record in the extracted text
+     * @param extractedTextUri URI of the full extracted text document, if it is also written
+     */
+    private record RecordLinks(int index, String extractedTextUri) {
+    }
+
+    private static String makeExtractedXmlUri(String sourceUri) {
+        return sourceUri + "-extracted-text.xml";
     }
 
     private String makeRecordUri(String sourceUri, int recordIndex, String uriValue) {
@@ -338,30 +388,35 @@ public class DocBuilder {
         Document doc = newExtractedXmlEnvelope(sourceUri, inputs, null,
             content -> appendExtractedContent(content.getOwnerDocument(), content, sourceUri, inputs.getExtractedText()),
             inputs.getDocumentClassification());
-        String uri = sourceUri + "-extracted-text.xml";
-        return new DocumentWriteOperationImpl(uri, sourceMetadata, new DOMHandle(doc));
+        return new DocumentWriteOperationImpl(makeExtractedXmlUri(sourceUri), sourceMetadata, new DOMHandle(doc));
     }
 
     /**
-     * @param recordIndex     only included when the envelope is for a record split from the extracted text
+     * @param recordLinks     only provided when the envelope is for a record split from the extracted text; a record
+     *                        always includes its source URI, as it is a fragment of the source
      * @param contentAppender populates the "content" element
      * @param classification  optional classification to add to the envelope
      */
-    private Document newExtractedXmlEnvelope(String sourceUri, DocumentInputs inputs, Integer recordIndex,
+    private Document newExtractedXmlEnvelope(String sourceUri, DocumentInputs inputs, RecordLinks recordLinks,
                                              Consumer<Element> contentAppender, byte[] classification) {
         Document doc = domHelper.newDocument();
         Element root = doc.createElementNS(Util.DEFAULT_XML_NAMESPACE, "root");
         doc.appendChild(root);
 
-        if (!extractedTextConfig.dropSource) {
+        if (recordLinks != null || !extractedTextConfig.dropSource) {
             Element sourceElement = doc.createElementNS(Util.DEFAULT_XML_NAMESPACE, "source-uri");
             sourceElement.appendChild(doc.createTextNode(sourceUri));
             root.appendChild(sourceElement);
         }
 
-        if (recordIndex != null) {
+        if (recordLinks != null) {
+            if (recordLinks.extractedTextUri() != null) {
+                Element extractedElement = doc.createElementNS(Util.DEFAULT_XML_NAMESPACE, RECORD_EXTRACTED_TEXT_URI_KEY);
+                extractedElement.appendChild(doc.createTextNode(recordLinks.extractedTextUri()));
+                root.appendChild(extractedElement);
+            }
             Element indexElement = doc.createElementNS(Util.DEFAULT_XML_NAMESPACE, "record-index");
-            indexElement.appendChild(doc.createTextNode(recordIndex.toString()));
+            indexElement.appendChild(doc.createTextNode(Integer.toString(recordLinks.index())));
             root.appendChild(indexElement);
         }
 

@@ -57,10 +57,13 @@ public abstract class DocumentPipelineFactory {
             }
         }
 
-        return textExtractor == null && textSplitter == null && textClassifier == null && embeddingProducer == null ?
-            null :
-            new DocumentPipeline(textExtractor, textSplitter, textClassifier, embeddingProducer, chunkSelector,
-                textExtractor != null ? ExtractedTextRecordSplitter.newInstance(context) : null);
+        if (textExtractor == null && textSplitter == null && textClassifier == null && embeddingProducer == null) {
+            return null;
+        }
+        DocumentPipeline pipeline = new DocumentPipeline(textExtractor, textSplitter, textClassifier, embeddingProducer, chunkSelector,
+            textExtractor != null ? ExtractedTextRecordSplitter.newInstance(context) : null);
+        pipeline.setClassifyDocumentWithRecords(context.getBooleanOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_KEEP_DOCUMENT, false));
+        return pipeline;
     }
 
     private static NuaClient newNuaClient(Context context) {

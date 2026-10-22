@@ -299,6 +299,28 @@ public abstract class Options {
     public static final String WRITE_EXTRACTED_TEXT_AGGREGATE_ENVELOPE = "spark.marklogic.write.extractedText.aggregate.envelope";
 
     /**
+     * Comma-delimited collections for each record; defaults to the collections in {@link #WRITE_COLLECTIONS}.
+     *
+     * @since 3.1.3
+     */
+    public static final String WRITE_EXTRACTED_TEXT_AGGREGATE_COLLECTIONS = "spark.marklogic.write.extractedText.aggregate.collections";
+
+    /**
+     * Comma-delimited roles and capabilities for each record; defaults to the permissions in {@link #WRITE_PERMISSIONS}.
+     *
+     * @since 3.1.3
+     */
+    public static final String WRITE_EXTRACTED_TEXT_AGGREGATE_PERMISSIONS = "spark.marklogic.write.extractedText.aggregate.permissions";
+
+    /**
+     * If true, the full extracted text document is written in addition to the records, and each record links to it.
+     * Defaults to false, in which case the records replace the full extracted text document.
+     *
+     * @since 3.1.3
+     */
+    public static final String WRITE_EXTRACTED_TEXT_AGGREGATE_KEEP_DOCUMENT = "spark.marklogic.write.extractedText.aggregate.keepDocument";
+
+    /**
      * @since 2.6.0
      */
     public static final String WRITE_EXTRACTED_TEXT_DOCUMENT_TYPE = "spark.marklogic.write.extractedText.documentType";

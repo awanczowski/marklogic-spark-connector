@@ -6,6 +6,7 @@ package com.marklogic.spark.writer;
 import com.marklogic.client.document.DocumentWriteOperation;
 import com.marklogic.client.io.BytesHandle;
 import com.marklogic.client.io.DOMHandle;
+import com.marklogic.client.io.DocumentMetadataHandle;
 import com.marklogic.spark.ConnectorException;
 import com.marklogic.spark.Context;
 import com.marklogic.spark.Options;
@@ -109,11 +110,172 @@ class ExtractedTextRecordsTest {
     }
 
     @Test
-    void envelopeOmitsSourceUriWhenSourceIsDropped() {
+    void envelopeIncludesSourceUriEvenWhenSourceIsDropped() {
         List<DocumentWriteOperation> docs = new ArrayList<>(newBuilder("class=sheet", null, true, true)
             .buildDocuments(inputsWithExtractedText(XHTML)));
-        assertEquals(0, root(docs.get(0)).getElementsByTagNameNS(Util.DEFAULT_XML_NAMESPACE, "source-uri").getLength());
-        assertEquals("1", child(root(docs.get(0)), "record-index").getTextContent());
+        Element envelope = root(docs.get(0));
+        assertEquals("/test.xlsx", child(envelope, "source-uri").getTextContent());
+        assertEquals("1", child(envelope, "record-index").getTextContent());
+        assertEquals(0, envelope.getElementsByTagNameNS(Util.DEFAULT_XML_NAMESPACE, "extracted-text-uri").getLength(),
+            "The full extracted text document is not linked when it is not written");
+    }
+
+    @Test
+    void recordsLinkToSourceViaMetadataAndDefaultToSourceCollectionsAndPermissions() {
+        List<DocumentWriteOperation> docs = new ArrayList<>(new DocBuilderFactory()
+            .withUriMaker((uri, values) -> uri)
+            .withCollections("source-collection,other")
+            .withPermissions("role1,read,role2,update")
+            .withExtractedTextDocumentType("xml")
+            .withExtractedTextFormat("html")
+            .withExtractedTextPermissions("role1,read,role2,update")
+            .withExtractedTextDropSource(true)
+            .withExtractedTextRecords(XHTML_NS, "div", "class=sheet", null, false)
+            .newDocBuilder()
+            .buildDocuments(inputsWithExtractedText(XHTML)));
+
+        assertEquals(2, docs.size());
+        for (DocumentWriteOperation doc : docs) {
+            DocumentMetadataHandle metadata = (DocumentMetadataHandle) doc.getMetadata();
+            assertEquals(Set.of("source-collection", "other"), metadata.getCollections(),
+                "Records default to the source collections, unlike the extracted text document");
+            assertEquals(Set.of(DocumentMetadataHandle.Capability.READ), metadata.getPermissions().get("role1"));
+            assertEquals(Set.of(DocumentMetadataHandle.Capability.UPDATE), metadata.getPermissions().get("role2"));
+            assertEquals("/test.xlsx", metadata.getMetadataValues().get("source-uri"),
+                "Bare records link to their source via a metadata value");
+            assertFalse(metadata.getMetadataValues().containsKey("extracted-text-uri"));
+        }
+        assertNotSame(docs.get(0).getMetadata(), docs.get(1).getMetadata(), "Each record has its own metadata");
+    }
+
+    @Test
+    void recordCollectionsAndPermissionsCanBeSpecified() {
+        DocumentMetadataHandle metadata = (DocumentMetadataHandle) new DocBuilderFactory()
+            .withUriMaker((uri, values) -> uri)
+            .withCollections("source-collection")
+            .withPermissions("role1,read")
+            .withExtractedTextDocumentType("xml")
+            .withExtractedTextFormat("html")
+            .withExtractedTextDropSource(true)
+            .withExtractedTextRecords(XHTML_NS, "div", "class=sheet", null, true)
+            .withExtractedTextRecordOutput("records,sheets", "role3,read,role3,update", false)
+            .newDocBuilder()
+            .buildDocuments(inputsWithExtractedText(XHTML)).iterator().next().getMetadata();
+
+        assertEquals(Set.of("records", "sheets"), metadata.getCollections());
+        assertEquals(1, metadata.getPermissions().size());
+        assertEquals(Set.of(DocumentMetadataHandle.Capability.READ, DocumentMetadataHandle.Capability.UPDATE),
+            metadata.getPermissions().get("role3"));
+    }
+
+    @Test
+    void keptDocumentDefaultsToSourceCollectionsAndPermissions() {
+        Map<String, String> options = validRecordOptions();
+        options.put(Options.WRITE_COLLECTIONS, "source-collection");
+        options.put(Options.WRITE_PERMISSIONS, "role1,read,role2,update");
+        options.put(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_KEEP_DOCUMENT, "true");
+        options.put(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ATTRIBUTE, "class=sheet");
+        options.put(Options.WRITE_EXTRACTED_TEXT_DROP_SOURCE, "true");
+
+        List<DocumentWriteOperation> docs = new ArrayList<>(writeContext(options).newDocBuilder()
+            .buildDocuments(inputsWithExtractedText(XHTML)));
+        assertEquals(3, docs.size(), docs.stream().map(DocumentWriteOperation::getUri).toList().toString());
+        for (DocumentWriteOperation doc : docs) {
+            DocumentMetadataHandle metadata = (DocumentMetadataHandle) doc.getMetadata();
+            assertEquals(Set.of("source-collection"), metadata.getCollections(), doc.getUri());
+            assertEquals(Set.of(DocumentMetadataHandle.Capability.READ), metadata.getPermissions().get("role1"), doc.getUri());
+            assertEquals(Set.of(DocumentMetadataHandle.Capability.UPDATE), metadata.getPermissions().get("role2"), doc.getUri());
+        }
+        assertTrue(docs.get(0).getUri().endsWith("-extracted-text.xml"));
+    }
+
+    @Test
+    void keptDocumentUsesExtractedTextCollectionsAndPermissionsWhenSpecified() {
+        Map<String, String> options = validRecordOptions();
+        options.put(Options.WRITE_COLLECTIONS, "source-collection");
+        options.put(Options.WRITE_PERMISSIONS, "role1,read");
+        options.put(Options.WRITE_EXTRACTED_TEXT_COLLECTIONS, "full-document");
+        options.put(Options.WRITE_EXTRACTED_TEXT_PERMISSIONS, "role3,read");
+        options.put(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_KEEP_DOCUMENT, "true");
+
+        DocumentWriteOperation full = writeContext(options).newDocBuilder().buildDocuments(inputsWithExtractedText(XHTML))
+            .stream().filter(doc -> doc.getUri().endsWith("-extracted-text.xml")).findFirst().orElseThrow();
+        DocumentMetadataHandle metadata = (DocumentMetadataHandle) full.getMetadata();
+        assertEquals(Set.of("full-document"), metadata.getCollections());
+        assertEquals(Set.of("role3"), metadata.getPermissions().keySet());
+    }
+
+    @Test
+    void extractedTextDocumentDoesNotInheritCollectionsWithoutKeepDocument() {
+        Map<String, String> options = validRecordOptions();
+        options.put(Options.WRITE_COLLECTIONS, "source-collection");
+        options.put(Options.WRITE_PERMISSIONS, "role1,read");
+        options.put(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ELEMENT, "no-such-element");
+
+        DocumentWriteOperation full = writeContext(options).newDocBuilder().buildDocuments(inputsWithExtractedText(XHTML))
+            .stream().filter(doc -> doc.getUri().endsWith("-extracted-text.xml")).findFirst().orElseThrow();
+        DocumentMetadataHandle metadata = (DocumentMetadataHandle) full.getMetadata();
+        assertTrue(metadata.getCollections().isEmpty(), "Existing behavior: extracted text documents don't inherit collections");
+        assertEquals(Set.of("role1"), metadata.getPermissions().keySet());
+    }
+
+    @Test
+    void keepFullExtractedDocument() {
+        DocumentInputs inputs = inputsWithExtractedText(XHTML);
+        List<DocumentWriteOperation> docs = new ArrayList<>(new DocBuilderFactory()
+            .withUriMaker((uri, values) -> uri)
+            .withCollections("source-collection")
+            .withExtractedTextDocumentType("xml")
+            .withExtractedTextFormat("html")
+            .withExtractedTextCollections("full-document")
+            .withExtractedTextDropSource(true)
+            .withExtractedTextRecords(XHTML_NS, "div", "class=sheet", null, true)
+            .withExtractedTextRecordOutput("records", null, true)
+            .newDocBuilder()
+            .buildDocuments(inputs));
+
+        assertEquals(List.of("/test.xlsx-extracted-text.xml", "/test.xlsx-extracted-1.xml", "/test.xlsx-extracted-2.xml"),
+            docs.stream().map(DocumentWriteOperation::getUri).toList());
+
+        Element full = root(docs.get(0));
+        Element fullContent = child(full, "content");
+        assertEquals("html", ((Element) fullContent.getFirstChild()).getLocalName(), "The full document contains all of the XHTML");
+        assertEquals(Set.of("full-document"), ((DocumentMetadataHandle) docs.get(0).getMetadata()).getCollections());
+
+        for (DocumentWriteOperation record : docs.subList(1, 3)) {
+            Element envelope = root(record);
+            assertEquals("/test.xlsx", child(envelope, "source-uri").getTextContent());
+            assertEquals("/test.xlsx-extracted-text.xml", child(envelope, "extracted-text-uri").getTextContent());
+            DocumentMetadataHandle metadata = (DocumentMetadataHandle) record.getMetadata();
+            assertEquals(Set.of("records"), metadata.getCollections());
+            assertEquals("/test.xlsx-extracted-text.xml", metadata.getMetadataValues().get("extracted-text-uri"));
+        }
+    }
+
+    @Test
+    void sourceDocumentIsClassifiedWhenFullDocumentIsKept() throws Exception {
+        Map<String, String> options = validRecordOptions();
+        options.put(Options.WRITE_EXTRACTED_TEXT, "true");
+        options.put(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ELEMENT, "p");
+        options.put(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ENVELOPE, "true");
+        options.put(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_KEEP_DOCUMENT, "true");
+        options.put(Options.WRITE_EXTRACTED_TEXT_DROP_SOURCE, "true");
+        options.put(ClassifierTestUtil.MOCK_RESPONSE_OPTION, mockResponseWithMarkers(2));
+
+        DocumentInputs inputs = new DocumentInputs("/hello.docx",
+            new BytesHandle(Files.readAllBytes(Path.of("src/test/resources/extraction-files/hello-world.docx"))), null, null);
+        try (DocumentPipeline pipeline = DocumentPipelineFactory.newDocumentPipeline(new Context(options))) {
+            pipeline.processDocuments(List.of(inputs));
+        }
+        assertNotNull(inputs.getDocumentClassification(), "The full extracted text document needs the document classification");
+        assertTrue(inputs.getExtractedRecords().stream().allMatch(r -> r.getClassification() != null));
+
+        List<DocumentWriteOperation> docs = new ArrayList<>(
+            new WriteContext(new StructType().add("test", DataTypes.StringType), options).newDocBuilder().buildDocuments(inputs));
+        assertEquals(3, docs.size(), docs.stream().map(DocumentWriteOperation::getUri).toList().toString());
+        assertEquals(1, root(docs.get(0)).getElementsByTagNameNS(Util.DEFAULT_XML_NAMESPACE, "classification").getLength());
+        Element recordClassification = (Element) root(docs.get(2)).getElementsByTagNameNS(Util.DEFAULT_XML_NAMESPACE, "classification").item(0);
+        assertEquals("record-2", ((Element) recordClassification.getElementsByTagName("SYSTEM").item(0)).getAttribute("value"));
     }
 
     @Test

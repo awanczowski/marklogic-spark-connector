@@ -214,6 +214,10 @@ public class WriteContext extends ContextSupport {
                 getStringOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ATTRIBUTE),
                 getStringOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_URI_ATTRIBUTE),
                 getBooleanOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_ENVELOPE, false))
+            .withExtractedTextRecordOutput(
+                getStringOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_COLLECTIONS),
+                getStringOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_PERMISSIONS),
+                getBooleanOption(Options.WRITE_EXTRACTED_TEXT_AGGREGATE_KEEP_DOCUMENT, false))
             .withChunkAssembler(ChunkAssemblerFactory.makeChunkAssembler(this));
 
         if (hasOption(Options.WRITE_URI_TEMPLATE)) {

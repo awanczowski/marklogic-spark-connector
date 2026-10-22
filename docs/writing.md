@@ -70,8 +70,8 @@ truncated, as truncation would produce malformed XHTML; the complete document is
 ### Splitting extracted HTML into records
 
 Extracted XHTML can be split into individual records - for example, one document per worksheet of an Excel file -
-using the same streaming splitter as aggregate XML import. Each record replaces the single extracted text document.
-This requires `spark.marklogic.write.extractedText.format=html` and
+using the same streaming splitter as aggregate XML import. By default, the records replace the single extracted text
+document. This requires `spark.marklogic.write.extractedText.format=html` and
 `spark.marklogic.write.extractedText.documentType=xml`, and cannot be combined with `spark.marklogic.write.splitter.*`
 options.
 
@@ -82,16 +82,27 @@ options.
 | `spark.marklogic.write.extractedText.aggregate.attribute` | Optional `name=value` filter, e.g. `class=sheet`; elements without that exact attribute value are not records. |
 | `spark.marklogic.write.extractedText.aggregate.uriAttribute` | Optional attribute whose value is used in each record URI. The value must be present and unique within each source document, otherwise an error is thrown. |
 | `spark.marklogic.write.extractedText.aggregate.envelope` | If `true`, wrap each record in an envelope; defaults to `false`. |
+| `spark.marklogic.write.extractedText.aggregate.collections` | Comma-delimited collections for each record; defaults to `spark.marklogic.write.collections`. |
+| `spark.marklogic.write.extractedText.aggregate.permissions` | Comma-delimited roles and capabilities for each record; defaults to `spark.marklogic.write.permissions`. |
+| `spark.marklogic.write.extractedText.aggregate.keepDocument` | If `true`, also write the full extracted text document, and link each record to it; defaults to `false`. |
 
 Records have URIs of `{sourceUri}-extracted-{position}.xml`, where position starts at 1, or
-`{sourceUri}-extracted-{attributeValue}.xml` when a URI attribute is specified. They receive the extracted text
-collections and permissions.
+`{sourceUri}-extracted-{attributeValue}.xml` when a URI attribute is specified. Unlike the full extracted text document,
+records default to the collections and permissions of the source document.
+
+Every record links to the document it was extracted from - even when the source document itself is not written - via a
+`source-uri` metadata value, and via a `source-uri` element when enveloped. When the full extracted text document is
+kept, each record also has an `extracted-text-uri` metadata value and element containing the URI of that document. The
+kept full extracted text document defaults to `spark.marklogic.write.collections` and `spark.marklogic.write.permissions`,
+like the records, unless `spark.marklogic.write.extractedText.collections` or
+`spark.marklogic.write.extractedText.permissions` are specified.
 
 By default, each record document is the record element itself. With the envelope enabled, each record is written as:
 
 ```
 <root xmlns="http://marklogic.com/appservices/model">
-  <source-uri>...</source-uri>          <!-- omitted when the source document is dropped -->
+  <source-uri>...</source-uri>
+  <extracted-text-uri>...</extracted-text-uri>  <!-- when the full extracted text document is kept -->
   <record-index>1</record-index>
   <content><div xmlns="http://www.w3.org/1999/xhtml" class="sheet">...</div></content>
   <extracted-metadata>...</extracted-metadata>
@@ -105,9 +116,9 @@ document is written instead.
 When a classifier is configured via `spark.marklogic.write.classifier.*` options, each record is classified
 individually: the text of each record - not its markup - is sent to Semaphore as an article in a multi-article request,
 batched according to `spark.marklogic.write.classifier.batchSize`, and the result is added to that record's envelope.
-The source document as a whole is not classified when records are produced. Because a bare record has no place to hold
-its classification, `spark.marklogic.write.extractedText.aggregate.envelope=true` is required when a classifier is
-configured.
+The source document as a whole is only classified when the full extracted text document is kept. Because a bare record
+has no place to hold its classification, `spark.marklogic.write.extractedText.aggregate.envelope=true` is required when
+a classifier is configured.
 
 ### Writing document rows
 
