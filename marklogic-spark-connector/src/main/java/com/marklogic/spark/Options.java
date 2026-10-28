@@ -710,6 +710,15 @@ public abstract class Options {
     public static final String WRITE_CLASSIFIER_OPTION_PREFIX = "spark.marklogic.write.classifier.option.";
 
     /**
+     * If true, metadata identifying each record or chunk - its source path, file name, and index - is sent to the
+     * classifier as META elements in each article of a multi-article request. The classifier returns these META
+     * elements with the classification of each article. Defaults to false.
+     *
+     * @since 3.1.3
+     */
+    public static final String WRITE_CLASSIFIER_ARTICLE_METADATA = "spark.marklogic.write.classifier.articleMetadata";
+
+    /**
      * Enables the incremental write feature, defaulting to an Optic query that uses fromLexicons and depends on a
      * field range index.
      *

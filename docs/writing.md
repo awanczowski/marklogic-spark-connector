@@ -120,6 +120,11 @@ The source document as a whole is only classified when the full extracted text d
 has no place to hold its classification, `spark.marklogic.write.extractedText.aggregate.envelope=true` is required when
 a classifier is configured.
 
+Set `spark.marklogic.write.classifier.articleMetadata=true` to send `META` elements identifying each record - or each
+chunk, when splitting - with its text: `source-path` (the initial URI of the source document), `file-name`, and
+`record-index` or `chunk-index`. The classifier returns them with that article's classification, so they are stored
+in each record's `classification` element alongside the concepts.
+
 ### Writing document rows
 
 As of the 2.2.0 release, you can [read documents from MarkLogic](reading-data/documents.md). A common use case is to then write these rows

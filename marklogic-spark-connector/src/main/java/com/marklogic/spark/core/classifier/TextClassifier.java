@@ -6,7 +6,9 @@ package com.marklogic.spark.core.classifier;
 import com.marklogic.spark.core.DocumentInputs;
 
 import java.io.Closeable;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Main interface for the text classification system; intended to hide the use of Semaphore.
@@ -47,5 +49,13 @@ public interface TextClassifier extends Closeable {
         String getTextToClassify();
 
         void addClassification(byte[] classification);
+
+        /**
+         * @return name/value pairs identifying the content, which can be sent to the classifier alongside the text;
+         * an empty map by default
+         */
+        default Map<String, String> getMetadata() {
+            return Collections.emptyMap();
+        }
     }
 }

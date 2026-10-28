@@ -24,7 +24,9 @@ import org.apache.commons.io.IOUtils;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -171,7 +173,10 @@ public class DocumentPipeline implements Closeable {
             List<ExtractedRecord> records = input.getExtractedRecords();
             final boolean hasRecords = records != null && !records.isEmpty();
             if (hasRecords) {
-                records.forEach(extractedRecord -> contents.add(new ClassifiableRecord(extractedRecord, getDomHelper())));
+                for (int i = 0; i < records.size(); i++) {
+                    contents.add(new ClassifiableRecord(records.get(i), getDomHelper(),
+                        newClassificationMetadata(input, "record-index", i + 1)));
+                }
             }
             // When records are produced, the source document is only classified if the full extracted text document
             // is also being written, as otherwise there's no document to hold that classification.
@@ -179,13 +184,27 @@ public class DocumentPipeline implements Closeable {
                 textClassifier.classifyDocument(input);
             }
             if (input.getChunkInputsList() != null) {
-                for (ChunkInputs chunkInputs : input.getChunkInputsList()) {
-                    contents.add(new ClassifiableChunk(chunkInputs));
+                List<ChunkInputs> chunks = input.getChunkInputsList();
+                for (int i = 0; i < chunks.size(); i++) {
+                    contents.add(new ClassifiableChunk(chunks.get(i), newClassificationMetadata(input, "chunk-index", i + 1)));
                 }
             }
         }
 
         textClassifier.classifyChunks(contents);
+    }
+
+    /**
+     * Identifies a record or chunk to the classifier; only sent when the classifier is configured to include article
+     * metadata.
+     */
+    private static Map<String, String> newClassificationMetadata(DocumentInputs input, String indexName, int index) {
+        final String sourcePath = input.getInitialUri();
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("source-path", sourcePath);
+        metadata.put("file-name", sourcePath.substring(sourcePath.lastIndexOf('/') + 1));
+        metadata.put(indexName, Integer.toString(index));
+        return metadata;
     }
 
     private void addEmbeddings(List<DocumentInputs> inputs) {
@@ -222,7 +241,7 @@ public class DocumentPipeline implements Closeable {
         }
     }
 
-    private record ClassifiableChunk(ChunkInputs chunkInputs) implements TextClassifier.ClassifiableContent {
+    private record ClassifiableChunk(ChunkInputs chunkInputs, Map<String, String> metadata) implements TextClassifier.ClassifiableContent {
 
         @Override
         public String getTextToClassify() {
@@ -233,6 +252,11 @@ public class DocumentPipeline implements Closeable {
         public void addClassification(byte[] classification) {
             chunkInputs.setClassification(classification);
         }
+
+        @Override
+        public Map<String, String> getMetadata() {
+            return metadata;
+        }
     }
 
     /**
@@ -240,7 +264,8 @@ public class DocumentPipeline implements Closeable {
      * whitespace text nodes, so the text content retains word boundaries. Never returns null, as the classifier
      * relies on one article per content to match responses to records.
      */
-    private record ClassifiableRecord(ExtractedRecord extractedRecord, DOMHelper domHelper) implements TextClassifier.ClassifiableContent {
+    private record ClassifiableRecord(ExtractedRecord extractedRecord, DOMHelper domHelper, Map<String, String> metadata)
+        implements TextClassifier.ClassifiableContent {
 
         @Override
         public String getTextToClassify() {
@@ -251,6 +276,11 @@ public class DocumentPipeline implements Closeable {
         @Override
         public void addClassification(byte[] classification) {
             extractedRecord.setClassification(classification);
+        }
+
+        @Override
+        public Map<String, String> getMetadata() {
+            return metadata;
         }
     }
 

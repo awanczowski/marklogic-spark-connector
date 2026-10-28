@@ -40,13 +40,23 @@ class SemaphoreTextClassifier implements TextClassifier {
     private final String encoding;
     private final XPathExpression articleExpression;
     private final int batchSize;
+    private final boolean includeArticleMetadata;
 
     SemaphoreTextClassifier(SemaphoreProxy semaphoreProxy, String encoding, int batchSize) {
+        this(semaphoreProxy, encoding, batchSize, false);
+    }
+
+    /**
+     * @param includeArticleMetadata if true, the metadata of each content is sent as META elements in its article;
+     *                               the classifier returns them with that article's classification
+     */
+    SemaphoreTextClassifier(SemaphoreProxy semaphoreProxy, String encoding, int batchSize, boolean includeArticleMetadata) {
         this.semaphoreProxy = semaphoreProxy;
         this.domHelper = new DOMHelper(null);
         this.transformer = newTransformer();
         this.encoding = encoding;
         this.batchSize = batchSize;
+        this.includeArticleMetadata = includeArticleMetadata;
         this.articleExpression = domHelper.compileXPath("//ARTICLE", "Unable to evaluate XPath expression");
     }
 
@@ -106,7 +116,17 @@ class SemaphoreTextClassifier implements TextClassifier {
         for (ClassifiableContent content : classifiableContents) {
             if (content.getTextToClassify() != null) {
                 Element article = doc.createElement("ARTICLE");
-                article.setTextContent(content.getTextToClassify().trim());
+                if (includeArticleMetadata) {
+                    content.getMetadata().forEach((name, value) -> {
+                        if (value != null) {
+                            Element meta = doc.createElement("META");
+                            meta.setAttribute("name", name);
+                            meta.setAttribute("value", value);
+                            article.appendChild(meta);
+                        }
+                    });
+                }
+                article.appendChild(doc.createTextNode(content.getTextToClassify().trim()));
                 root.appendChild(article);
             }
         }
