@@ -479,8 +479,14 @@ public class DocBuilder {
             }
         }
 
-        Element metadataElement = doc.createElementNS(namespace, localName);
-        metadataElement.appendChild(doc.createTextNode(metadataEntry.getValue()));
+        // Names such as custom document properties may contain characters that are not allowed in an XML name, like
+        // spaces; those are replaced, and the original key is retained so that no information is lost.
+        final String validLocalName = ExtractionUtil.toXmlLocalName(localName);
+        Element metadataElement = doc.createElementNS(namespace, validLocalName);
+        if (!validLocalName.equals(localName)) {
+            metadataElement.setAttribute("key", ExtractionUtil.toValidXmlText(key));
+        }
+        metadataElement.appendChild(doc.createTextNode(ExtractionUtil.toValidXmlText(metadataEntry.getValue())));
         return metadataElement;
     }
 
